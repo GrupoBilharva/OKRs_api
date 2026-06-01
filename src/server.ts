@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import blocoFinanceiroRouter  from "./routes/blocoFinanceiro";
 import blocoOperacionalRouter from "./routes/blocoOperacional";
@@ -10,13 +11,33 @@ import { authenticateToken, requireLojaAccess, requireLevel } from "./middleware
 dotenv.config();
 
 const app = express();
+app.disable('x-powered-by');
 
-const corsOptions = {
-  origin: '*',
+// CORS – origens permitidas via env var (vírgula-separadas); padrão = produção
+const allowedOrigins = (process.env.CORS_ORIGIN ?? 'https://okrs-front-deploy.vercel.app')
+  .split(',')
+  .map(o => o.trim());
+
+app.use(cors({
+  origin(origin, callback) {
+    // Sem origin = ferramentas server-side (curl, Postman, mobile nativo) — permitir
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error('CORS: origem não permitida'));
+  },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-};
-app.use(cors(corsOptions));
+  credentials: true,
+}));
+
+// Headers de segurança
+app.use((_req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
+app.use(cookieParser());
 app.use(express.json());
 
 // ── Saúde ────────────────────────────────────────────────────────────────────

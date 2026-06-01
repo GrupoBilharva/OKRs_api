@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { Router } from "express";
+import type { Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -7,12 +8,42 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { authenticateToken, requireLevel } from "../middleware/auth";
 
+// Rate limit in-memory para /auth/login (15 min / 10 tentativas por IP)
+// Aviso: em Vercel serverless o contador não persiste entre instâncias diferentes.
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const LOGIN_WINDOW_MS    = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
+
+function loginRateLimit(req: Request, res: Response, next: NextFunction) {
+  const ip =
+    (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0].trim()
+    ?? req.socket.remoteAddress
+    ?? 'unknown';
+
+  const now   = Date.now();
+  const entry = loginAttempts.get(ip);
+
+  if (entry && entry.resetAt > now && entry.count >= LOGIN_MAX_ATTEMPTS) {
+    const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({ error: 'Muitas tentativas. Tente novamente em alguns minutos.' });
+  }
+
+  if (!entry || entry.resetAt <= now) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+  } else {
+    entry.count++;
+  }
+
+  next();
+}
+
 const router = Router();
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma  = new PrismaClient({ adapter });
 
-const LOJA_SELECT = { id: true, name: true, cnpj: true, cidade: true } as const;
+const LOJA_SELECT = { id: true, name: true, cnpj: true, cidade: true, sigla: true } as const;
 
 const INCLUDE_LOJAS_REGIONAIS = {
   loja: { select: LOJA_SELECT },
@@ -51,14 +82,14 @@ function formatRegiao(r: any) {
 }
 
 // ─── POST /auth/login ───────────────────────────────────────────────────────
-router.post("/login", async (req, res) => {
+router.post("/login", loginRateLimit, async (req, res) => {
   const schema = z.object({
     email:    z.string().email(),
     password: z.string().min(1),
   });
 
   const parsed = schema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  if (!parsed.success) return res.status(400).json({ error: "Email e senha são obrigatórios." });
 
   const { email, password } = parsed.data;
 
@@ -110,10 +141,22 @@ router.post("/login", async (req, res) => {
       },
     }).catch(() => {});
 
-    return res.json({ token, user: formatUser(user) });
+    res.cookie('okrs_token', token, {
+      httpOnly: true,
+      secure:   true,
+      sameSite: 'none',
+      maxAge:   8 * 60 * 60 * 1000,
+    });
+    return res.json({ user: formatUser(user) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
+});
+
+// ─── POST /auth/logout ──────────────────────────────────────────────────────
+router.post("/logout", (_req, res) => {
+  res.clearCookie('okrs_token', { httpOnly: true, secure: true, sameSite: 'none' });
+  return res.status(204).send();
 });
 
 // ─── GET /auth/me ───────────────────────────────────────────────────────────
@@ -130,8 +173,8 @@ router.get("/me", authenticateToken, async (req, res) => {
   }
 });
 
-// ─── GET /auth/lojas  (TI) ─────────────────────────────────────────────────
-router.get("/lojas", authenticateToken, requireLevel("TI"), async (_req, res) => {
+// ─── GET /auth/lojas  (DIRECAO+) ───────────────────────────────────────────
+router.get("/lojas", authenticateToken, requireLevel("DIRECAO"), async (_req, res) => {
   try {
     const lojas = await prisma.loja.findMany({
       select:  { id: true, name: true, cnpj: true, cidade: true, sigla: true },
@@ -390,11 +433,18 @@ router.get("/analytics", authenticateToken, requireLevel("TI"), async (_req, res
         GROUP BY TO_CHAR("createdAt", 'YYYY-MM-DD')
         ORDER BY data ASC
       `,
-      prisma.$queryRaw<{ lojaNome: string; cnpj: string; acessos: number }[]>`
-        SELECT payload->>'lojaNome' as "lojaNome", payload->>'lojaCnpj' as cnpj, COUNT(*)::int as acessos
-        FROM "UserEvent"
-        WHERE action = 'LOGIN' AND "createdAt" >= ${seteAtras} AND payload->>'lojaCnpj' IS NOT NULL
-        GROUP BY payload->>'lojaNome', payload->>'lojaCnpj'
+      prisma.$queryRaw<{ lojaNome: string; cnpj: string; cidade: string | null; acessos: number }[]>`
+        SELECT
+          ue.payload->>'lojaNome' AS "lojaNome",
+          ue.payload->>'lojaCnpj' AS cnpj,
+          l.cidade,
+          COUNT(*)::int AS acessos
+        FROM "UserEvent" ue
+        LEFT JOIN "Loja" l ON l.cnpj = ue.payload->>'lojaCnpj'
+        WHERE ue.action = 'LOGIN'
+          AND ue."createdAt" >= ${seteAtras}
+          AND ue.payload->>'lojaCnpj' IS NOT NULL
+        GROUP BY ue.payload->>'lojaNome', ue.payload->>'lojaCnpj', l.cidade
         ORDER BY acessos DESC
         LIMIT 10
       `,

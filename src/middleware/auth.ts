@@ -37,13 +37,14 @@ declare global {
 
 export function authenticateToken(req: Request, res: Response, next: NextFunction) {
   const auth = req.headers.authorization;
+  const raw  = auth?.startsWith("Bearer ") ? auth.slice(7) : req.cookies?.okrs_token;
 
-  if (!auth?.startsWith("Bearer ")) {
+  if (!raw) {
     return res.status(401).json({ error: "Token não fornecido." });
   }
 
   try {
-    const payload = jwt.verify(auth.slice(7), process.env.JWT_SECRET!) as AuthUser;
+    const payload = jwt.verify(raw, process.env.JWT_SECRET!) as AuthUser;
     if (!payload.lojaIds)   payload.lojaIds   = [];
     if (!payload.lojaCnpjs) payload.lojaCnpjs = [];
     req.user = payload;
@@ -67,8 +68,10 @@ export function requireLojaAccess(req: Request, res: Response, next: NextFunctio
   if (!req.user) return res.status(401).json({ error: "Não autenticado." });
 
   const { type, lojaCnpj, lojaCnpjs } = req.user;
+  const level = LEVEL[type] ?? 0;
 
-  if (type === "LOJA") {
+  // Nível LOJA (inclui alias legado USER): restringe ao próprio CNPJ
+  if (level === LEVEL.LOJA) {
     const cnpjSolicitado = req.query.cnpj as string;
     if (lojaCnpj !== cnpjSolicitado) {
       return res.status(403).json({ error: "Acesso negado. Esta loja não está vinculada ao seu usuário." });
@@ -76,7 +79,8 @@ export function requireLojaAccess(req: Request, res: Response, next: NextFunctio
     return next();
   }
 
-  if (type === "GERENTE") {
+  // Nível GERENTE (inclui alias legado REGIONAL): restringe às lojas atribuídas
+  if (level === LEVEL.GERENTE) {
     const cnpjSolicitado = req.query.cnpj as string;
     if (!lojaCnpjs.includes(cnpjSolicitado)) {
       return res.status(403).json({ error: "Acesso negado. Esta loja não está na sua região." });
