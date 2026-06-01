@@ -502,6 +502,11 @@ router.post("/batch/:trimestre", requireLevel("ADMIN_2"), async (req, res) => {
           select:  { cartaoMeta: true, avistaMeta: true, ticketMeta: true, inadimplenciaMeta: true },
         });
 
+        const cartaoMeta        = metasHerdadas?.cartaoMeta        ?? 50;
+        const avistaMeta        = metasHerdadas?.avistaMeta        ?? 30;
+        const ticketMeta        = metasHerdadas?.ticketMeta        ?? 600;
+        const inadimplenciaMeta = metasHerdadas?.inadimplenciaMeta ?? 10;
+
         await prisma.metaFinanceira.upsert({
           where: { lojaId_trimestre: { lojaId: loja.id, trimestre } },
           update: {
@@ -515,10 +520,7 @@ router.post("/batch/:trimestre", requireLevel("ADMIN_2"), async (req, res) => {
             cartaoAtual: kr.cartaoPct, avistaAtual: kr.avistaPct,
             ticketAtual: kr.ticketMedio, inadimplenciaAtual,
             totalVendas: kr.totalVendas, valorTotal: kr.valorTotal,
-            cartaoMeta:        metasHerdadas?.cartaoMeta        ?? 50,
-            avistaMeta:        metasHerdadas?.avistaMeta        ?? 30,
-            ticketMeta:        metasHerdadas?.ticketMeta        ?? 600,
-            inadimplenciaMeta: metasHerdadas?.inadimplenciaMeta ?? 10,
+            cartaoMeta, avistaMeta, ticketMeta, inadimplenciaMeta,
             lastCalculatedAt: new Date(), calculationStatus: "success",
           },
         });
