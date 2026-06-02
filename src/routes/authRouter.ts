@@ -63,13 +63,14 @@ function formatUser(u: any) {
     : (u.lojasRegionais ?? []).map((ul: any) => ul.loja);
 
   return {
-    id:     u.id,
-    name:   u.name,
-    email:  u.email,
-    type:   u.type,
-    loja:   u.loja ?? null,
+    id:                u.id,
+    name:              u.name,
+    email:             u.email,
+    type:              u.type,
+    loja:              u.loja ?? null,
     lojas,
-    regiao: u.regiao ? { id: u.regiao.id, nome: u.regiao.nome } : null,
+    regiao:            u.regiao ? { id: u.regiao.id, nome: u.regiao.nome } : null,
+    showActivityPanel: u.showActivityPanel,
   };
 }
 
@@ -80,6 +81,9 @@ function formatRegiao(r: any) {
     lojas: r.lojas.map((rl: any) => rl.loja),
   };
 }
+
+const ACCOUNT_MAX_ATTEMPTS = 5;
+const ACCOUNT_LOCK_MS      = 15 * 60 * 1000; // 15 min
 
 // ─── POST /auth/login ───────────────────────────────────────────────────────
 router.post("/login", loginRateLimit, async (req, res) => {
@@ -99,12 +103,40 @@ router.post("/login", loginRateLimit, async (req, res) => {
       include: INCLUDE_LOJAS_REGIONAIS,
     });
 
+    // Usuário não encontrado — mesma mensagem para não enumerar contas
     if (!user) return res.status(401).json({ error: "Email ou senha incorretos." });
 
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid) return res.status(401).json({ error: "Email ou senha incorretos." });
+    // ── Bloqueio por conta ───────────────────────────────────────────────────
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      const minutos = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
+      return res.status(429).json({
+        error: `Conta bloqueada temporariamente. Tente novamente em ${minutos} minuto${minutos !== 1 ? 's' : ''}.`,
+      });
+    }
 
-    // Usa região se atribuída, senão usa lojas diretas (mesmo critério do formatUser)
+    const valid = await bcrypt.compare(password, user.password);
+
+    if (!valid) {
+      // Incrementa contador de falhas e bloqueia se atingir o limite
+      const attempts = user.failedLoginAttempts + 1;
+      const lock     = attempts >= ACCOUNT_MAX_ATTEMPTS
+        ? new Date(Date.now() + ACCOUNT_LOCK_MS)
+        : null;
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data:  { failedLoginAttempts: attempts, lockedUntil: lock },
+      });
+
+      return res.status(401).json({ error: "Email ou senha incorretos." });
+    }
+
+    // ── Login bem-sucedido: zera contador ────────────────────────────────────
+    await prisma.user.update({
+      where: { id: user.id },
+      data:  { failedLoginAttempts: 0, lockedUntil: null },
+    });
+
     const lojasDoToken = user.regiao
       ? user.regiao.lojas.map((rl: any) => rl.loja)
       : user.lojasRegionais.map((ul: any) => ul.loja);
@@ -117,9 +149,9 @@ router.post("/login", loginRateLimit, async (req, res) => {
         sub:       user.id,
         email:     user.email,
         type:      user.type,
-        lojaId:    user.lojaId        ?? null,
-        lojaCnpj:  user.loja?.cnpj    ?? null,
-        lojaNome:  user.loja?.name    ?? null,
+        lojaId:    user.lojaId     ?? null,
+        lojaCnpj:  user.loja?.cnpj ?? null,
+        lojaNome:  user.loja?.name ?? null,
         lojaIds,
         lojaCnpjs,
       },
@@ -127,16 +159,15 @@ router.post("/login", loginRateLimit, async (req, res) => {
       { expiresIn: "8h" }
     );
 
-    // Log login (non-blocking)
     void prisma.userEvent.create({
       data: {
-        userId: user.id,
-        action: 'LOGIN',
+        userId:  user.id,
+        action:  'LOGIN',
         payload: {
-          userType:  user.type,
-          lojaId:    user.lojaId    ?? null,
-          lojaNome:  user.loja?.name ?? null,
-          lojaCnpj:  user.loja?.cnpj ?? null,
+          userType: user.type,
+          lojaId:   user.lojaId     ?? null,
+          lojaNome: user.loja?.name ?? null,
+          lojaCnpj: user.loja?.cnpj ?? null,
         },
       },
     }).catch(() => {});
@@ -206,15 +237,16 @@ router.post("/users", authenticateToken, requireLevel("TI"), async (req, res) =>
     email:     z.string().email(),
     password:  z.string().min(6),
     type:      z.enum(["LOJA", "GERENTE", "DIRECAO", "ADMINISTRATIVO", "TI"]),
-    lojaId:    z.string().uuid().optional().nullable(),
-    lojaIds:   z.array(z.string().uuid()).optional(),
-    regiaoId:  z.string().uuid().optional().nullable(),
+    lojaId:            z.string().uuid().optional().nullable(),
+    lojaIds:           z.array(z.string().uuid()).optional(),
+    regiaoId:          z.string().uuid().optional().nullable(),
+    showActivityPanel: z.boolean().optional(),
   });
 
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
-  const { name, email, password, type, lojaId, lojaIds, regiaoId } = parsed.data;
+  const { name, email, password, type, lojaId, lojaIds, regiaoId, showActivityPanel } = parsed.data;
 
   if (type === "LOJA" && !lojaId) {
     return res.status(400).json({ error: "Usuários do tipo Loja precisam ter uma loja vinculada." });
@@ -230,10 +262,11 @@ router.post("/users", authenticateToken, requireLevel("TI"), async (req, res) =>
       data: {
         name,
         email,
-        password: hashed,
+        password:          hashed,
         type,
-        lojaId:   lojaId   ?? null,
-        regiaoId: regiaoId ?? null,
+        lojaId:            lojaId   ?? null,
+        regiaoId:          regiaoId ?? null,
+        showActivityPanel: showActivityPanel ?? false,
         ...(type === "GERENTE" && !regiaoId && lojaIds
           ? { lojasRegionais: { create: lojaIds.map((id) => ({ lojaId: id })) } }
           : {}),
@@ -254,23 +287,25 @@ router.patch("/users/:id", authenticateToken, requireLevel("TI"), async (req, re
     name:      z.string().min(2).optional(),
     password:  z.string().min(6).optional(),
     type:      z.enum(["LOJA", "GERENTE", "DIRECAO", "ADMINISTRATIVO", "TI"]).optional(),
-    lojaId:    z.string().uuid().nullable().optional(),
-    lojaIds:   z.array(z.string().uuid()).optional(),
-    regiaoId:  z.string().uuid().nullable().optional(),
+    lojaId:            z.string().uuid().nullable().optional(),
+    lojaIds:           z.array(z.string().uuid()).optional(),
+    regiaoId:          z.string().uuid().nullable().optional(),
+    showActivityPanel: z.boolean().optional(),
   });
 
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
-  const { name, password, type, lojaId, lojaIds, regiaoId } = parsed.data;
+  const { name, password, type, lojaId, lojaIds, regiaoId, showActivityPanel } = parsed.data;
   const userId = req.params.id as string;
 
   const updateData: Record<string, any> = {};
-  if (name     !== undefined) updateData.name     = name;
-  if (type     !== undefined) updateData.type     = type;
-  if (lojaId   !== undefined) updateData.lojaId   = lojaId;
-  if (regiaoId !== undefined) updateData.regiaoId = regiaoId;
-  if (password !== undefined) updateData.password = await bcrypt.hash(password, 10);
+  if (name              !== undefined) updateData.name              = name;
+  if (type              !== undefined) updateData.type              = type;
+  if (lojaId            !== undefined) updateData.lojaId            = lojaId;
+  if (regiaoId          !== undefined) updateData.regiaoId          = regiaoId;
+  if (password          !== undefined) updateData.password          = await bcrypt.hash(password, 10);
+  if (showActivityPanel !== undefined) updateData.showActivityPanel = showActivityPanel;
 
   try {
     if (lojaIds !== undefined) {

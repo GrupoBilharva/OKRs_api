@@ -18,9 +18,12 @@ model User {
   lojasRegionais UserLoja[]
   regiaoId       String?
   regiao         Regiao?    @relation(fields: [regiaoId], references: [id])
-  events         UserEvent[]
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  events              UserEvent[]
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+  showActivityPanel   Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 }
 
 enum UserType {
