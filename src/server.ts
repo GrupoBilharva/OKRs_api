@@ -18,16 +18,18 @@ const allowedOrigins = (process.env.CORS_ORIGIN ?? 'https://okrs-front-deploy.ve
   .split(',')
   .map(o => o.trim());
 
-app.use(cors({
-  origin(origin, callback) {
-    // Sem origin = ferramentas server-side (curl, Postman, mobile nativo) — permitir
+const corsOptions = {
+  origin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
     if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
     callback(new Error('CORS: origem não permitida'));
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
-}));
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 // Headers de segurança
 app.use((_req, res, next) => {
