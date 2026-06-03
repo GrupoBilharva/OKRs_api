@@ -15,7 +15,7 @@ app.disable('x-powered-by');
 
 // URL de produção sempre permitida; CORS_ORIGIN no .env só adiciona origens extras (ex: localhost)
 const allowedOrigins = [
-  'https://okrs-front-deploy.vercel.app',
+  'https://okrs-front-one.vercel.app',
   ...(process.env.CORS_ORIGIN ?? '').split(',').map(o => o.trim()).filter(Boolean),
 ];
 
