@@ -1,5 +1,19 @@
 {
   "version": 2,
   "builds": [{ "src": "src/server.ts", "use": "@vercel/node" }],
-  "rewrites": [{ "source": "/(.*)", "destination": "src/server.ts" }]
+  "routes": [
+    {
+      "src": "/(.*)",
+      "methods": ["OPTIONS"],
+      "headers": {
+        "Access-Control-Allow-Origin": "https://okrs-front-deploy.vercel.app",
+        "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type,Authorization",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Max-Age": "86400"
+      },
+      "status": 200
+    },
+    { "src": "/(.*)", "dest": "src/server.ts" }
+  ]
 }
