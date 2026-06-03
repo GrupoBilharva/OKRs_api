@@ -13,15 +13,16 @@ dotenv.config();
 const app = express();
 app.disable('x-powered-by');
 
-// CORS – origens permitidas via env var (vírgula-separadas); padrão = produção
-const allowedOrigins = (process.env.CORS_ORIGIN ?? 'https://okrs-front-deploy.vercel.app')
-  .split(',')
-  .map(o => o.trim());
+// URL de produção sempre permitida; CORS_ORIGIN no .env só adiciona origens extras (ex: localhost)
+const allowedOrigins = [
+  'https://okrs-front-deploy.vercel.app',
+  ...(process.env.CORS_ORIGIN ?? '').split(',').map(o => o.trim()).filter(Boolean),
+];
 
-const corsOptions = {
-  origin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
+const corsOptions: cors.CorsOptions = {
+  origin(origin, callback) {
     if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error('CORS: origem não permitida'));
+    callback(null, false);
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
